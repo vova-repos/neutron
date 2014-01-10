@@ -593,8 +593,14 @@ class TestNiciraL3NatTestCase(NiciraL3NatTest,
             if res.status_int == 201:
                 self._delete('routers', router['router']['id'])
 
-    def test_router_create_distributed(self):
+    def test_router_create_distributed_with_3_1(self):
         self._test_router_create_with_distributed(True, True)
+
+    def test_router_create_distributed_with_new_nvp_versions(self):
+        with mock.patch.object(nvplib, 'create_explicit_route_lrouter'):
+            self._test_router_create_with_distributed(True, True, '3.2')
+            self._test_router_create_with_distributed(True, True, '4.0')
+            self._test_router_create_with_distributed(True, True, '4.1')
 
     def test_router_create_not_distributed(self):
         self._test_router_create_with_distributed(False, False)
@@ -1371,6 +1377,41 @@ class TestNiciraNetworkGateway(test_l2_gw.NetworkGatewayDbTestCase,
             # Assert Neutron name is not truncated
             self.assertEqual(nw_gw[self.resource]['name'], name)
 
+    def test_update_network_gateway_with_name_calls_backend(self):
+        with mock.patch.object(
+            nvplib, 'update_l2_gw_service') as mock_update_gw:
+            with self._network_gateway(name='cavani') as nw_gw:
+                nw_gw_id = nw_gw[self.resource]['id']
+                self._update(nvp_networkgw.COLLECTION_NAME, nw_gw_id,
+                             {self.resource: {'name': 'higuain'}})
+                mock_update_gw.assert_called_once_with(
+                    mock.ANY, nw_gw_id, 'higuain')
+
+    def test_update_network_gateway_without_name_does_not_call_backend(self):
+        with mock.patch.object(
+            nvplib, 'update_l2_gw_service') as mock_update_gw:
+            with self._network_gateway(name='something') as nw_gw:
+                nw_gw_id = nw_gw[self.resource]['id']
+                self._update(nvp_networkgw.COLLECTION_NAME, nw_gw_id,
+                             {self.resource: {}})
+                self.assertEqual(mock_update_gw.call_count, 0)
+
+    def test_update_network_gateway_name_exceeds_40_chars(self):
+        new_name = 'this_is_a_gateway_whose_name_is_longer_than_40_chars'
+        with self._network_gateway(name='something') as nw_gw:
+            nw_gw_id = nw_gw[self.resource]['id']
+            self._update(nvp_networkgw.COLLECTION_NAME, nw_gw_id,
+                         {self.resource: {'name': new_name}})
+            req = self.new_show_request(nvp_networkgw.COLLECTION_NAME,
+                                        nw_gw_id)
+            res = self.deserialize('json', req.get_response(self.ext_api))
+            # Assert Neutron name is not truncated
+            self.assertEqual(new_name, res[self.resource]['name'])
+            # Assert NVP name is truncated
+            self.assertEqual(
+                new_name[:40],
+                self.fc._fake_gatewayservice_dict[nw_gw_id]['display_name'])
+
     def test_create_network_gateway_nvp_error_returns_500(self):
         def raise_nvp_api_exc(*args, **kwargs):
             raise NvpApiClient.NvpApiException
@@ -1382,6 +1423,15 @@ class TestNiciraNetworkGateway(test_l2_gw.NetworkGatewayDbTestCase,
                 self.fmt, 'xxx', name='yyy',
                 devices=[{'id': uuidutils.generate_uuid()}])
             self.assertEqual(500, res.status_int)
+
+    def test_create_network_gateway_nvp_error_returns_409(self):
+        with mock.patch.object(nvplib,
+                               'create_l2_gw_service',
+                               side_effect=NvpApiClient.Conflict):
+            res = self._create_network_gateway(
+                self.fmt, 'xxx', name='yyy',
+                devices=[{'id': uuidutils.generate_uuid()}])
+            self.assertEqual(409, res.status_int)
 
     def test_list_network_gateways(self):
         with self._network_gateway(name='test-gw-1') as gw1:
